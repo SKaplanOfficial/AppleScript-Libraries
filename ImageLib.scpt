@@ -2,6 +2,7 @@
 use framework "Foundation"
 use framework "AppKit"
 use framework "Quartz"
+use scripting additions
 
 property NSImage : class "NSImage"
 
@@ -118,8 +119,90 @@ on Image(theTarget)
 
 			set rotatedImageData to rotatedImage's TIFFRepresentation()
 			set my base64data to (rotatedImageData's base64EncodedStringWithOptions:0) as string
+			set my width to current application's NSWidth(rotatedBounds)
+			set my height to current application's NSHeight(rotatedBounds)
 			set my modified to true
 		end rotate
+
+		(*
+			Extracts text from the image.
+
+			Returns:
+				({String}) - The list of text items found in the image.
+		*)
+		on extractText()
+			set theImage to my _getNSImage()
+			set requestHandler to current application's VNImageRequestHandler's alloc()'s initWithData:(theImage's TIFFRepresentation()) options:(current application's NSDictionary's alloc()'s init())
+			set textRequest to current application's VNRecognizeTextRequest's alloc()'s init()
+			requestHandler's performRequests:{textRequest} |error|:(missing value)
+			set textResults to textRequest's results()
+			set textItems to {}
+			repeat with observation in textResults
+				copy (first item in (observation's topCandidates:1))'s |string|() as text to end of textItems
+			end repeat
+			return textItems
+		end extractText
+
+		(*
+			Gets a list of possible classifications for objects in the image.
+
+			Params:
+				confidenceThreshold (Real) - The minimum confidence level of each returned classification.
+
+			Returns:
+				({{identifier: String, confidence: Real}}) - The list of classifications.
+		*)
+		on classifications above confidenceThreshold
+			set theImage to my _getNSImage()
+			set requestHandler to current application's VNImageRequestHandler's alloc()'s initWithData:(theImage's TIFFRepresentation()) options:(current application's NSDictionary's alloc()'s init())
+			set classificationRequest to current application's VNClassifyImageRequest's alloc()'s init()
+			requestHandler's performRequests:{classificationRequest} |error|:(missing value)
+
+			set classificationResults to classificationRequest's results()
+			set classifications to {}
+			repeat with observation in classificationResults
+				if observation's confidence() > confidenceThreshold then
+					copy {identifier:observation's identifier() as text, confidence:observation's confidence() as real} to end of classifications
+				end if
+			end repeat
+			return classifications
+		end classifications
+
+		(*
+			Gets the payload text of all barcodes, QR codes, etc. in the image.
+
+			Returns:
+				({String}) - The list of payload texts.
+		*)
+		on extractPayloads()
+			set theImage to my _getNSImage()
+			set requestHandler to current application's VNImageRequestHandler's alloc()'s initWithData:(theImage's TIFFRepresentation()) options:(current application's NSDictionary's alloc()'s init())
+			set barcodeRequest to current application's VNDetectBarcodesRequest's alloc()'s init()
+			requestHandler's performRequests:{barcodeRequest} |error|:(missing value)
+
+			set barcodeResults to barcodeRequest's results()
+			set payloads to {}
+			repeat with observation in barcodeResults
+				copy (observation's payloadStringValue() as text) to end of payloads
+			end repeat
+			return payloads
+		end extractPayloads
+
+		(*
+			Counts the number of human faces in the image.
+
+			Returns:
+				(Integer) - The number of faces observed in the image.
+		*)
+		on countFaces()
+			set theImage to my _getNSImage()
+			set requestHandler to current application's VNImageRequestHandler's alloc()'s initWithData:(theImage's TIFFRepresentation()) options:(current application's NSDictionary's alloc()'s init())
+			set faceRequest to current application's VNDetectFaceRectanglesRequest's alloc()'s init()
+			requestHandler's performRequests:{faceRequest} |error|:(missing value)
+
+			set faceResults to faceRequest's results()
+			return count of faceResults
+		end countFaces
 
 		(*
 			Saves the image at the provided file path.
@@ -187,7 +270,7 @@ on Image(theTarget)
 			set theBitmap to current application's NSBitmapImageRep's imageRepWithData:theImageData
 			set theData to theBitmap's representationUsingType:(current application's NSBitmapImageFileTypePNG) |properties|:(missing value)
 
-			set theTempFile to POSIX path of (NSTemporaryDirectory() as string) & "Image.png"
+			set theTempFile to POSIX path of (current application's NSTemporaryDirectory() as string) & "Image.png"
 			set theURL to current application's |NSURL|'s fileURLWithPath:theTempFile
 			theData's writeToURL:theURL atomically:true
 			set theWorkspace to current application's NSWorkspace's sharedWorkspace()
@@ -205,6 +288,53 @@ on Image(theTarget)
 
 	return ILImage
 end Image
+
+(*
+	Extract texts from an image.
+
+	Syn. ILImage's extractText()
+
+	Params:
+		theImage (ILImage) - The image to extract text from.
+
+	Returns:
+		({String}) - The list of text items found in the image.
+
+*)
+on extractText from theImage
+	return theImage's extractText()
+end extractText
+
+(*
+	Gets a list of possible classifications for objects in an image.
+
+	Syn. ILImage's classifications above confidenceThreshold
+
+	Params:
+		theImage (ILImage) - The image to get classifications for.
+		confidenceThreshold (Real) - The minimum confidence level of each returned classification.
+
+	Returns:
+		({{identifier: String, confidence: Real}}) - The list of classifications.
+*)
+on classifications for theImage above confidenceLevel
+	return theImage's (classifications above confidenceLevel)
+end classifications
+
+(*
+	Gets the payload text of all barcodes, QR codes, etc. in an image.
+
+	Syn. ILImage's extractPayloads()
+
+	Params:
+		theImage (ILImage) - The image to extract payloads from.
+
+	Returns:
+		({String}) - The list of payload texts.
+*)
+on extractPayloads from theImage
+	return theImage's extractPayloads()
+end extractPayloads
 
 (*
 	Initializes an ILImage script object from a system symbol.
@@ -230,6 +360,71 @@ on Symbol(symbolName, pointSize)
 
 	return imageObj
 end Symbol
+
+(*
+	Creates an ILImage object from data.
+
+	Syn. imageFromData:theData
+
+	Params:
+		theData («data», String, NSData) - The data of an image, as an AppleScript or Objective-C data class, or as a base 64 encoded string.
+
+	Returns:
+		(ILImage) - The new image object.
+*)
+on createImage from theData
+	if theData is missing value then
+		error "Data is missing value"
+	end if
+
+	set imageObj to Image("---")
+	set theImage to missing value
+
+	if class of theData is text then
+		-- The data is a base64 string
+		set imageObj's base64data to theData
+		set base64data to current application's NSData's alloc()'s initWithBase64EncodedString:theData options:0
+		set theImage to current application's NSImage's alloc()'s initWithData:base64data
+	else
+		try
+			if (class of theData as text) contains "picture" then
+				-- The data is an AppleScript picture
+				set theTempFile to POSIX path of (current application's NSTemporaryDirectory() as string) & "tmp.data"
+				set fileRef to open for access theTempFile with write permission
+				try
+					write theData to fileRef
+					close access fileRef
+				on error
+					close access fileRef
+				end try
+
+				set theURL to current application's |NSURL|'s fileURLWithPath:theTempFile
+				set theImage to current application's NSImage's alloc()'s initWithContentsOfFile:theTempFile
+				set imageObj's base64data to (theImage's TIFFRepresentation()'s base64EncodedStringWithOptions:0) as string
+			end if
+		on error err
+			-- The data is (probably) an NSData object
+			try
+				set imageObj's base64data to (theData's base64EncodedStringWithOptions:0) as string
+				set theImage to current application's NSImage's alloc()'s initWithData:theData
+			end try
+		end try
+	end if
+
+	if theImage is missing value then
+		error "Could not convert data to base 64 string."
+	end if
+
+	set imageObj's modified to true
+	set imageObj's width to theImage's |size|()'s width()
+	set imageObj's height to theImage's |size|()'s height()
+
+	return imageObj
+end createImage
+
+on imageFromData:theData
+	return my (createImage from theData)
+end imageFromData:
 
 (*
 	Rotates an image clockwise by the specifies number of degrees.
