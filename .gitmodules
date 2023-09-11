@@ -1,0 +1,3 @@
+[submodule "Argonaut"]
+	path = Argonaut
+	url = git@github.com:SKaplanOfficial/Argonaut.git
